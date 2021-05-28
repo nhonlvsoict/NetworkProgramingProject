@@ -13,18 +13,34 @@
 #include <errno.h>
 #include <fcntl.h>
 
-
 #define MAXLINE 255
 #define SERVPORT 5501
 #define NUM_OF_PLAYER 2
 
 int listenfd;
-int fd[NUM_OF_PLAYER][2]; // Used to store two (2 child) ends of pipe
+int fd[NUM_OF_PLAYER][2][2];    // Used to store two (2 child) ends of pipe
+int pinit[NUM_OF_PLAYER] = {0}; // parent init state of pipe to child
 int child_no = 0;
 
+int guard(int n, char *err)
+{
+    if (n < 0)
+    {
+        perror(err);
+        exit(1);
+    }
+    return n;
+}
+
 // ham tam thoi de tra ve child no gan voi child no nay
-int findCoupleChildNo(int child_no){
-    if(child_no == 0) return 1;
+int findCoupleChildNo(int _child_no)
+{
+    // return -1 mean no couple child
+    if (child_no < 2)
+        return -1;
+
+    if (_child_no == 0)
+        return 1;
     return 0;
 }
 
@@ -54,22 +70,48 @@ char *upperize(char *str, char *dest)
 
     return dest;
 }
+void checkParentMsg(int clifd, int _child_no){
+    //check mess from parent
+            char message[MAXLINE];
+            ssize_t r = read(fd[_child_no][0][0], message, MAXLINE);
 
-void childProcqess(int clifd, struct sockaddr_in cliaddr, int child_no)
+            if (r > 0)
+            {
+                // long strleng = strlen(message);
+                message[strlen(message)] = '\0'; // string ends with '\0
+                printf("-- Child %d received from parent: %s\n", _child_no, message);
+                // int sentBytes = send(clifd, message, strlen(message), 0);
+                // if (sentBytes < 0)
+                // {
+                //     perror("-- Send result string error");
+                // }
+            }
+}
+
+void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
 {
     int recvBytes, sentBytes;
     char mesg[MAXLINE];
     char res[MAXLINE];
-    
-    close(fd[child_no][0]);
+
+    close(fd[_child_no][1][0]); // close parent's read
+    close(fd[_child_no][0][1]); // close parent's write
+    guard(fcntl(fd[_child_no][1][1], F_SETFL, fcntl(fd[_child_no][1][1], F_GETFL) | O_NONBLOCK), "-- Error on set write non-blocking on child");
+    guard(fcntl(fd[_child_no][0][0], F_SETFL, fcntl(fd[_child_no][0][0], F_GETFL) | O_NONBLOCK), "-- Error on set read non-blocking on child");
     while (1)
     {
-        printf("\n-- Receiving data ...\n");
-        recvBytes = recv(clifd, mesg, MAXLINE, 0);
+        // printf("-- %d Receiving data ...\n", _child_no);
+        // children van bi block o day
+        recvBytes = recv(clifd, mesg, MAXLINE, MSG_DONTWAIT);
 
         if (recvBytes < 0)
         {
-            perror("-- Error! ");
+            if (errno == EWOULDBLOCK || errno == EAGAIN)
+            {
+                checkParentMsg(clifd, _child_no);
+                continue;
+            }
+            perror("-- Error when recv()! ");
         }
         else if (recvBytes == 0)
         {
@@ -78,17 +120,21 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int child_no)
         }
         else
         {
-            mesg[recvBytes] = 0;
-            printf("-- %d Message from client [%s:%d]: %s\n", child_no, inet_ntoa(cliaddr.sin_addr), htons(cliaddr.sin_port), mesg);
 
-            write(fd[child_no][1], mesg, strlen(mesg)+1);
+            mesg[recvBytes] = 0;
+            printf("\n\n-- %d Message from client [%s:%d]: %s\n", _child_no, inet_ntoa(cliaddr.sin_addr), htons(cliaddr.sin_port), mesg);
+
+            write(fd[_child_no][1][1], mesg, strlen(mesg) + 1);
+
+            // printf("-- %d child written to parent\n", _child_no);
 
             upperize(mesg, res);
+            
             if (strcmp(res, "Q") == 0)
             {
-                
+
                 printf("-- Client request to exit. Exiting\n");
-                // close(fd[child_no][1]);
+                // close(fd[_child_no][1]);
                 break;
             }
             sentBytes = send(clifd, res, strlen(res), 0);
@@ -96,46 +142,93 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int child_no)
             {
                 perror("-- Send result string error");
             }
+
+            
         }
     }
-    
-    close(fd[child_no][1]);
+
+    close(fd[_child_no][1][1]);
+    close(fd[_child_no][0][0]);
     close(clifd);
 }
 
-void parentProcqess()
+void parentProcqess(int _child_no)
 {
     // o day phai viet ham de doc lien tuc tu cac pipe noi den cac child
-    for (int i = 0; i < child_no; i++)
+    for (int i = 0; i < _child_no; i++)
     {
-        char message[MAXLINE];
-        close(fd[i][1]);
-        // dang bi block o day.
-        read(fd[i][0], message, MAXLINE);
-        printf("- %d Parent process start waiting...\n", i);
-        long strleng = strlen(message);
-        if (strleng > 0)
+        // nhung gi ham cha chi chay mot lan voi moi ham con thi nhet vao group duois
+        if (!pinit[i])
         {
+            // neu chua khoi tao cho child nay thi khoi tao mot lan duy nhat
+            pinit[i]++;
+            printf("- Parent set nb for child %d, total child: %d\n", i, _child_no);
+
+            close(fd[i][1][1]);
+            close(fd[i][0][0]);
+
+            int fcr1 = fcntl(fd[i][1][0], F_SETFL, fcntl(fd[i][1][0], F_GETFL) | O_NONBLOCK);
+            if (fcr1 < 0)
+            {
+                printf("- Child %d error set read nb\n", i);
+                perror("- Error on set read non-blocking on parent\n");
+                exit(0);
+            };
+            int fcr2 = fcntl(fd[i][0][1], F_SETFL, fcntl(fd[i][0][1], F_GETFL) | O_NONBLOCK);
+            if (fcr2 < 0)
+            {
+                printf("- Child %d error set write nb\n", i);
+                perror("- Error on set write non-blocking on parent\n");
+                exit(0);
+            };
+        }
+
+        //kiem tra lien tuc
+        char message[MAXLINE];
+        ssize_t r = read(fd[i][1][0], message, MAXLINE);
+        // printf("- %d Parent process start waiting...\n", i);
+
+        if (r > 0)
+        {
+            // long strleng = strlen(message);
             message[strlen(message)] = '\0'; // string ends with '\0
             // printf("- Parent process waiting...\n");
-            printf("- %d Data received from child process: length %ld: %s\n\n", i, strlen(message), message);
-            // wait(NULL);
+            printf("- Data received from child %d - length %ld: %s\n", i, strlen(message), message);
+
+            // send to another child
+            // sprinf chuyen i sang string
+            int couple = findCoupleChildNo(i);
+            if (couple >= 0)
+            {
+                char temStr[20];
+                sprintf(temStr, "%d", i);
+
+                // char info[] = "Message from child ";
+                // strcat(info, temStr);
+                // strcat(info, " : ");
+                // strcpy(temStr, " to child ");
+                // strcat(info, temStr);
+                // sprintf(temStr, "%d", couple);
+
+                // strcat(info, temStr);
+                // strcat(info, ": ");
+                // strcat(info, message);
+                printf("- Parent foward from %d to %d: %s\n", i, couple, message);
+                write(fd[couple][0][1], message, strlen(message) + 1);
+            }
         }
     }
 }
 
-int guard(int n, char * err) { if (n == -1) { perror(err); exit(1); } return n; }
 int main(int argc, char **argv)
 {
-    
-    
     int connfd;
     int recvBytes, sentBytes;
     socklen_t len;
     char mesg[MAXLINE];
     struct sockaddr_in servaddr, cliaddr;
     int nno, nch;
-    char* username[NUM_OF_PLAYER];
+    char *username[NUM_OF_PLAYER];
 
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     int flags = guard(fcntl(listenfd, F_GETFL), "could not get flags on TCP listening socket");
@@ -160,7 +253,6 @@ int main(int argc, char **argv)
         perror("Error! ");
         return 0;
     }
-   
 
     printf("Server started!\n");
     socklen_t clientAddrLen = sizeof(cliaddr);
@@ -173,7 +265,7 @@ int main(int argc, char **argv)
         connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &clientAddrLen);
         if (connfd < 0)
         {
-            if (errno == EINTR || errno == EWOULDBLOCK|| errno == EWOULDBLOCK)
+            if (errno == EINTR || errno == EWOULDBLOCK || errno == EWOULDBLOCK)
             {
                 parentProcqess(child_no);
                 continue;
@@ -184,13 +276,19 @@ int main(int argc, char **argv)
             }
         }
 
-        if (pipe(fd[child_no]) == -1)
+        if (pipe(fd[child_no][0]) == -1)
         {
-            perror("Pipe Failed");
+            perror("Pipe p to c Failed");
             // return 1;
         }
-        child_no++;
-        if(child_no > NUM_OF_PLAYER){
+        if (pipe(fd[child_no][1]) == -1)
+        {
+            perror("Pipe c to p Failed");
+            // return 1;
+        }
+
+        if (child_no == NUM_OF_PLAYER)
+        {
             printf("Exceed max number of player: %d. Abord connection.\n", NUM_OF_PLAYER);
             close(connfd);
             continue;
@@ -203,25 +301,27 @@ int main(int argc, char **argv)
         }
         if (pid == 0)
         {
-            close(listenfd);
+            close(listenfd); // enable this so disable below
             printf("- Connected to client [%s:%d] by process pid = %d\n", inet_ntoa(cliaddr.sin_addr), htons(cliaddr.sin_port), getpid());
-            childProcqess(connfd, cliaddr, child_no - 1);
+            childProcqess(connfd, cliaddr, child_no);
 
             // sau khi exit, trong p con se in dong nay
             printf("- Exiting process pid = %d\n", getpid());
 
+            // close(listenfd);
             exit(0);
         }
         // vi thang con da chay vao dong if tren, co exit ơ tren nen ko bao gio chay den dong duoi
         // thang cha xe clóe connfd nay de cho thang moi connect den
         close(connfd);
+        printf("- Child no: %d\n", child_no);
+        child_no++;
 
         // dua phan connect toi p con o day
         // lam ssao p cha identify cac p con duoc nhi??? dung child_no nhe
-        
     }
 
-// o day can dong tat ca pipe da mo trong parent
+    // o day can dong tat ca pipe da mo trong parent
     // close(fd[0][0]);
     // close(fd[0][1]);
     close(listenfd);

@@ -7,10 +7,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <fcntl.h>
 
 #define MAXLINE 255
 #define SERVPORT 5501
 
+int guard(int n, char * err) { if (n < 0) { perror(err); exit(1); } return n; }
 
 void clearBuffer () {
     char c;
@@ -80,6 +82,8 @@ int main(int argc, char **argv) {
     printf("creat socket\n");
     // clientfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     clientfd = socket(AF_INET, SOCK_STREAM, 0);
+    // int flags = guard(fcntl(clientfd, F_GETFL), "could not get flags on TCP listening socket");
+    // guard(fcntl(clientfd, F_SETFL, flags | O_NONBLOCK), "could not set TCP listening socket to be non-blocking");
 
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
@@ -88,7 +92,7 @@ int main(int argc, char **argv) {
 
     connectFailed = connect(clientfd, (struct sockaddr_in*) &servaddr, sizeof(servaddr));
     if (connectFailed) {
-        perror("Error!\n");
+        perror("Error on connect!\n");
         return 0;
     }
     process(clientfd, &servaddr);
