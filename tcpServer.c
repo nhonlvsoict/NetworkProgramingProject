@@ -12,15 +12,16 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <fcntl.h>
-
-#define MAXLINE 255
-#define SERVPORT 5501
-#define NUM_OF_PLAYER 2
-
+#include "serverProps.h"
+#include "childProcess.h"
 int listenfd;
 int fd[NUM_OF_PLAYER][2][2];    // Used to store two (2 child) ends of pipe
 int pinit[NUM_OF_PLAYER] = {0}; // parent init state of pipe to child
 int child_no = 0;
+int child_pid[NUM_OF_PLAYER];
+int child_order[NUM_OF_PLAYER] = {-1}; // 0 is first, 1 is second
+char *child_username[NUM_OF_PLAYER];
+
 
 int guard(int n, char *err)
 {
@@ -70,29 +71,33 @@ char *upperize(char *str, char *dest)
 
     return dest;
 }
-void checkParentMsg(int clifd, int _child_no){
+
+void checkParentMsg(int clifd, int _child_no)
+{
     //check mess from parent
-            char message[MAXLINE];
-            ssize_t r = read(fd[_child_no][0][0], message, MAXLINE);
+    // char message[MAXLINE];
+    // char *message = (char *)malloc(MAXLINE);
+    char message[MAXLINE];
+    ssize_t r = read(fd[_child_no][0][0], message, MAXLINE);
 
-            if (r > 0)
-            {
-                // long strleng = strlen(message);
-                message[strlen(message)] = '\0'; // string ends with '\0
-                printf("-- Child %d received from parent: %s\n", _child_no, message);
-                // int sentBytes = send(clifd, message, strlen(message), 0);
-                // if (sentBytes < 0)
-                // {
-                //     perror("-- Send result string error");
-                // }
-            }
+    if (r > 0)
+    {
+        // long strleng = strlen(message);
+        message[strlen(message)] = '\0'; // string ends with '\0
+        printf("-- Child %d received from parent: %s\n", _child_no, message);
+        int sentBytes = send(clifd, message, strlen(message), 0);
+        if (sentBytes < 0)
+        {
+            perror("-- Send result string error");
+        }
+    }
 }
-
 void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
 {
-    int recvBytes, sentBytes;
+    int recvBytes;
+    // int sentBytes;
     char mesg[MAXLINE];
-    char res[MAXLINE];
+    // char res[MAXLINE];
 
     close(fd[_child_no][1][0]); // close parent's read
     close(fd[_child_no][0][1]); // close parent's write
@@ -128,22 +133,20 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
 
             // printf("-- %d child written to parent\n", _child_no);
 
-            upperize(mesg, res);
-            
-            if (strcmp(res, "Q") == 0)
-            {
+            // upperize(mesg, res);
 
-                printf("-- Client request to exit. Exiting\n");
-                // close(fd[_child_no][1]);
-                break;
-            }
-            sentBytes = send(clifd, res, strlen(res), 0);
-            if (sentBytes < 0)
-            {
-                perror("-- Send result string error");
-            }
+            // if (strcmp(res, "Q") == 0)
+            // {
 
-            
+            //     printf("-- Client request to exit. Exiting\n");
+            //     // close(fd[_child_no][1]);
+            //     break;
+            // }
+            // sentBytes = send(clifd, res, strlen(res), 0);
+            // if (sentBytes < 0)
+            // {
+            //     perror("-- Send result string error");
+            // }
         }
     }
 
@@ -151,7 +154,135 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
     close(fd[_child_no][0][0]);
     close(clifd);
 }
+int existUsername(char *username, int child){
+    for (int i = 0; i < child_no; i++)
+    {
+        if (i != child)
+            if (strcmp(username, child_username[i]) == 0)
+                return 1;
+    }
+    return 0;
+}
+void setChildOrder(int _child){
+    int rand = child_pid[_child] % 2;
+    child_order[_child] = rand;
+    int op = findCoupleChildNo(_child);
+    child_order[op] = !rand;
+}
+void sentSocketData(int sent_no, SocketData *socketData)
+{
+    char *newmsg = serialize(socketData);
+    // send to apropriate child
 
+    if (sent_no >= 0)
+    {
+        char temStr[20];
+        // sprintf(temStr, "%d", child);
+
+        printf("- Parent foward to %d: %s\n", sent_no, newmsg);
+        write(fd[sent_no][0][1], newmsg, strlen(newmsg) + 1);
+    }
+}
+void processSocketData(SocketData *socketData, int child)
+{
+    // luu client se forard data nay den. nho set bien sent_no cho ai
+    // int sent_no = child;
+    int couple_no = findCoupleChildNo(child);
+    
+    switch (socketData->command)
+    {
+    case CSEND_NAME:
+        if (!existUsername(socketData->message, child))
+        {
+            child_username[child] = socketData->message;
+            // SSEND_LIST_PLAYER
+            char *userList = (char *)malloc(MAXLINE * sizeof(char));
+            // strcat(userList, child_username[0]);
+            for (int i = 0; i < child_no && i != child; i++)
+            {
+                strcat(userList, child_username[i]);
+                strcat(userList, " ");
+            };
+            socketData->message = userList;
+            socketData->command = SSEND_LIST_PLAYER;
+            sentSocketData(child, socketData);
+        }
+        else
+        {
+            socketData->command = SREP_NAME_INVALID;
+       
+            // socketData->message = emptyMsg;
+            sentSocketData(child, socketData);
+        }
+
+        break;
+    case CSEND_OPNAME:
+        socketData->command = SSEND_CHALLENGE;
+        socketData->message = child_username[child];
+
+        sentSocketData(couple_no, socketData);
+        break;
+    case CREP_CHALLENGE_ACCEPT:
+        // gui lai order cho dua vua accept
+        setChildOrder(child);
+        int opCommand;
+        if (child_order[child] == 0)
+        {
+            socketData->command = SNOTI_ORDER_FIRST;
+            opCommand = SNOTI_ORDER_SECOND;
+        }
+        else
+        {
+            socketData->command = SNOTI_ORDER_SECOND;
+            opCommand = SNOTI_ORDER_FIRST;
+        }
+        
+        
+        // socketData->message = emptyMsg;
+        sentSocketData(child, socketData);
+        
+        SocketData *opSocketData = makeSocketDataObject(opCommand, socketData->message, 0, 0);
+        sentSocketData(couple_no, opSocketData);
+        break;
+    case CREP_CHALLENGE_DENY:
+        // foward cho dua kia
+        socketData->command = SFORW_CHALLENGE_DENY;
+        // socketData->message = emptyMsg;
+        sentSocketData(couple_no, socketData);
+        break;
+    // case CCFED_OP:
+    
+    //     break;
+    case SSEND_CHALLENGE:
+    
+        break;
+    
+        break;
+    case SNOTI_ORDER_FIRST:
+        break;
+    case SNOTI_ORDER_SECOND:
+        break;
+    case CSENT_TURN_FIRST:
+        break;
+    case CSENT_TURN_SECOND:
+        break;
+    case SFORW_TURN_FIRST:
+        break;
+    case SFORW_TURN_SECOND:
+        break;
+    case CSENT_QUIT_FIRST:
+        break;
+    case CSENT_QUIT_SECOND:
+        break;
+    case SSENT_END_FIRST:
+        break;
+    case SSENT_END_SECOND:
+        break;
+    default:
+        // sent_no = couple_no;
+        break;
+    };
+}
 void parentProcqess(int _child_no)
 {
     // o day phai viet ham de doc lien tuc tu cac pipe noi den cac child
@@ -192,30 +323,17 @@ void parentProcqess(int _child_no)
         {
             // long strleng = strlen(message);
             message[strlen(message)] = '\0'; // string ends with '\0
-            // printf("- Parent process waiting...\n");
+
             printf("- Data received from child %d - length %ld: %s\n", i, strlen(message), message);
+            SocketData *sd = deserialize(message);
 
-            // send to another child
-            // sprinf chuyen i sang string
-            int couple = findCoupleChildNo(i);
-            if (couple >= 0)
+            if (sd != 0)
             {
-                char temStr[20];
-                sprintf(temStr, "%d", i);
-
-                // char info[] = "Message from child ";
-                // strcat(info, temStr);
-                // strcat(info, " : ");
-                // strcpy(temStr, " to child ");
-                // strcat(info, temStr);
-                // sprintf(temStr, "%d", couple);
-
-                // strcat(info, temStr);
-                // strcat(info, ": ");
-                // strcat(info, message);
-                printf("- Parent foward from %d to %d: %s\n", i, couple, message);
-                write(fd[couple][0][1], message, strlen(message) + 1);
-            }
+                printf("- Receive command %d, point (%d, %d) and msg: %s\n", sd->command, sd->point->x, sd->point->y, sd->message);
+                
+                processSocketData(sd, i);
+                
+            };
         }
     }
 }
@@ -223,12 +341,12 @@ void parentProcqess(int _child_no)
 int main(int argc, char **argv)
 {
     int connfd;
-    int recvBytes, sentBytes;
-    socklen_t len;
-    char mesg[MAXLINE];
+    // int recvBytes, sentBytes;
+    // socklen_t len;
+    // char mesg[MAXLINE];
     struct sockaddr_in servaddr, cliaddr;
-    int nno, nch;
-    char *username[NUM_OF_PLAYER];
+    // int nno, nch;
+    // char *username[NUM_OF_PLAYER];
 
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     int flags = guard(fcntl(listenfd, F_GETFL), "could not get flags on TCP listening socket");
@@ -275,6 +393,12 @@ int main(int argc, char **argv)
                 perror("Error");
             }
         }
+        if (child_no == NUM_OF_PLAYER)
+        {
+            printf("Exceed max number of player: %d. Abord connection.\n", NUM_OF_PLAYER);
+            close(connfd);
+            continue;
+        }
 
         if (pipe(fd[child_no][0]) == -1)
         {
@@ -287,12 +411,6 @@ int main(int argc, char **argv)
             // return 1;
         }
 
-        if (child_no == NUM_OF_PLAYER)
-        {
-            printf("Exceed max number of player: %d. Abord connection.\n", NUM_OF_PLAYER);
-            close(connfd);
-            continue;
-        }
         pid = fork();
         if (pid < 0)
         {
@@ -315,6 +433,7 @@ int main(int argc, char **argv)
         // thang cha xe clóe connfd nay de cho thang moi connect den
         close(connfd);
         printf("- Child no: %d\n", child_no);
+        child_pid[child_no] = pid;
         child_no++;
 
         // dua phan connect toi p con o day

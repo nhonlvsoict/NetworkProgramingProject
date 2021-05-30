@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
-#define MAXLINE 255
+#define MAXLINE 512
 #define SERVPORT 5501
 
 int guard(int n, char * err) { if (n < 0) { perror(err); exit(1); } return n; }

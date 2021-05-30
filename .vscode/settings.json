@@ -1,5 +1,10 @@
 {
     "files.associations": {
-        "signal.h": "c"
+        "signal.h": "c",
+        "fcntl.h": "c",
+        "types.h": "c",
+        "serverprops.h": "c",
+        "typeinfo": "c",
+        "type_traits": "c"
     }
 }
