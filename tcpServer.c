@@ -14,15 +14,20 @@
 #include <fcntl.h>
 #include "serverProps.h"
 #include "childProcess.h"
+
 int listenfd;
-int fd[NUM_OF_PLAYER][2][2];    // Used to store two (2 child) ends of pipe
-int pinit[NUM_OF_PLAYER] = {0}; // parent init state of pipe to child
-int child_no = 0;
-int child_pid[NUM_OF_PLAYER];
+
+int child_num = 0;
+
+int fd[NUM_OF_PLAYER][2][2];    // Used to store two (2 child_no) ends of pipe
+int pinit[NUM_OF_PLAYER] = {0}; // parent init state of pipe to child_no
+int child_pid[NUM_OF_PLAYER] = {-1};
 int child_order[NUM_OF_PLAYER] = {-1}; // 0 is first, 1 is second
 char *child_username[NUM_OF_PLAYER];
+int ops_no[NUM_OF_PLAYER] = {-1}; // opponent no list
+// them bien o day thi cung can them xu ly o sig_chld va init()
 
-
+void sentSocketData(int sent_no, SocketData *socketData);
 int guard(int n, char *err)
 {
     if (n < 0)
@@ -32,17 +37,38 @@ int guard(int n, char *err)
     }
     return n;
 }
-
-// ham tam thoi de tra ve child no gan voi child no nay
-int findCoupleChildNo(int _child_no)
+// void setOpponent(int _child1, int _child2){
+//     ops_no[_child1] = _child2;
+//     ops_no[_child2] = _child1;
+// }
+int findChildNoByPId(int pid)
 {
-    // return -1 mean no couple child
-    if (child_no < 2)
-        return -1;
+    int index = 0;
 
-    if (_child_no == 0)
-        return 1;
-    return 0;
+    while (index < NUM_OF_PLAYER && child_pid[index] != pid)
+        ++index;
+
+    return (index == NUM_OF_PLAYER ? -1 : index);
+}
+int findChildNoByUsername(char *username)
+{
+    for (int i = 0; i < NUM_OF_PLAYER; i++)
+    {
+        if (child_username[i])
+            if (strcmp(username, child_username[i]) == 0)
+                return i;
+    }
+    return -1;
+}
+// ham tam thoi de tra ve child_no no gan voi child_no no nay
+int findOpponentNo(int _child_no)
+{
+    // return -1 mean no couple child_no
+    if (child_num < 2)
+        return -1;
+    if (ops_no[_child_no] == -1)
+        perror("Error! No opponent found");
+    return ops_no[_child_no];
 }
 
 void sig_chld(int signo)
@@ -50,8 +76,41 @@ void sig_chld(int signo)
     pid_t pid;
     int stat;
     pid = waitpid(-1, &stat, WNOHANG);
-    printf("child %d terminated\n", pid);
-    child_no--;
+    printf("child_no %d terminated\n", pid);
+     // giam so child_no
+    
+    int cno = findChildNoByPId(pid);
+    int op_no = findOpponentNo(cno);
+    // set ops no neu co = -1
+    ops_no[cno] = -1;
+    if(op_no != -1) {
+        ops_no[op_no] = -1;
+        child_order[op_no] = -1;
+        // o day can gui tin hieu nhac thang kia thoat cmr
+        char msg[1] = "0"; 
+        SocketData *sd = makeSocketDataObject(SFORW_QUIT, msg, 0, 0);
+        sentSocketData(op_no, sd);
+    }
+    // set child_pid = -1
+    child_pid[cno] = -1;
+    // child_order = -1
+    child_order[cno] = -1;
+    // child_username = null
+    child_username[cno] = 0;
+
+    // pinti
+    pinit[cno] = 0;
+    //fd
+    close(fd[cno][0][0]);
+    close(fd[cno][0][1]);
+    close(fd[cno][1][0]);
+    close(fd[cno][1][1]);
+    
+    fd[cno][0][0] = 0;
+    fd[cno][0][1] = 0;
+    fd[cno][1][0] = 0;
+    fd[cno][1][1] = 0;
+    child_num--;
 }
 
 void sig_int(int signo)
@@ -71,7 +130,6 @@ char *upperize(char *str, char *dest)
 
     return dest;
 }
-
 void checkParentMsg(int clifd, int _child_no)
 {
     //check mess from parent
@@ -101,8 +159,8 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
 
     close(fd[_child_no][1][0]); // close parent's read
     close(fd[_child_no][0][1]); // close parent's write
-    guard(fcntl(fd[_child_no][1][1], F_SETFL, fcntl(fd[_child_no][1][1], F_GETFL) | O_NONBLOCK), "-- Error on set write non-blocking on child");
-    guard(fcntl(fd[_child_no][0][0], F_SETFL, fcntl(fd[_child_no][0][0], F_GETFL) | O_NONBLOCK), "-- Error on set read non-blocking on child");
+    guard(fcntl(fd[_child_no][1][1], F_SETFL, fcntl(fd[_child_no][1][1], F_GETFL) | O_NONBLOCK), "-- Error on set write non-blocking on child_no");
+    guard(fcntl(fd[_child_no][0][0], F_SETFL, fcntl(fd[_child_no][0][0], F_GETFL) | O_NONBLOCK), "-- Error on set read non-blocking on child_no");
     while (1)
     {
         // printf("-- %d Receiving data ...\n", _child_no);
@@ -131,7 +189,7 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
 
             write(fd[_child_no][1][1], mesg, strlen(mesg) + 1);
 
-            // printf("-- %d child written to parent\n", _child_no);
+            // printf("-- %d child_no written to parent\n", _child_no);
 
             // upperize(mesg, res);
 
@@ -154,165 +212,177 @@ void childProcqess(int clifd, struct sockaddr_in cliaddr, int _child_no)
     close(fd[_child_no][0][0]);
     close(clifd);
 }
-int existUsername(char *username, int child){
-    for (int i = 0; i < child_no; i++)
+int existUsername(char *username, int child_no){
+    for (int i = 0; i < NUM_OF_PLAYER; i++)
     {
-        if (i != child)
-            if (strcmp(username, child_username[i]) == 0)
+        if (i != child_no && child_username[i])
+            if ((strcmp(username, child_username[i]) == 0))
                 return 1;
     }
     return 0;
 }
-void setChildOrder(int _child){
+void startGame(int _child){
     int rand = child_pid[_child] % 2;
     child_order[_child] = rand;
-    int op = findCoupleChildNo(_child);
-    child_order[op] = !rand;
+    int op_no = findOpponentNo(_child);
+    child_order[op_no] = !rand;
+    ops_no[_child] = op_no;
+    ops_no[op_no] = _child;
 }
 void sentSocketData(int sent_no, SocketData *socketData)
 {
     char *newmsg = serialize(socketData);
-    // send to apropriate child
+    // send to apropriate child_no
 
     if (sent_no >= 0)
     {
         char temStr[20];
-        // sprintf(temStr, "%d", child);
+        // sprintf(temStr, "%d", child_no);
 
         printf("- Parent foward to %d: %s\n", sent_no, newmsg);
         write(fd[sent_no][0][1], newmsg, strlen(newmsg) + 1);
     }
 }
-void processSocketData(SocketData *socketData, int child)
+void endGame(_child){
+    child_order[_child] = -1;
+    int op_no = findOpponentNo(_child);
+    child_order[op_no] = -1;
+    ops_no[_child] = -1;
+    ops_no[op_no] = -1;
+}
+void processSocketData(SocketData *socketData, int child_no)
 {
     // luu client se forard data nay den. nho set bien sent_no cho ai
-    // int sent_no = child;
-    int couple_no = findCoupleChildNo(child);
+    // // int sent_no = child_no;
+    // int couple_no = findOpponentNo(child_no);
     
     switch (socketData->command)
     {
     case CSEND_NAME:
-        if (!existUsername(socketData->message, child))
+        if (!existUsername(socketData->message, child_no))
         {
-            child_username[child] = socketData->message;
+            child_username[child_no] = socketData->message;
             // SSEND_LIST_PLAYER
             char *userList = (char *)malloc(MAXLINE * sizeof(char));
             // strcat(userList, child_username[0]);
-            for (int i = 0; i < child_no && i != child; i++)
+            for (int i = 0; i < NUM_OF_PLAYER; i++)
             {
-                strcat(userList, child_username[i]);
-                strcat(userList, " ");
+                if(i != child_no && child_username[i] && ops_no[i] == -1){
+                    strcat(userList, child_username[i]);
+                    strcat(userList, " ");
+                }
             };
             socketData->message = userList;
             socketData->command = SSEND_LIST_PLAYER;
-            sentSocketData(child, socketData);
+            sentSocketData(child_no, socketData);
         }
         else
         {
             socketData->command = SREP_NAME_INVALID;
        
             // socketData->message = emptyMsg;
-            sentSocketData(child, socketData);
+            sentSocketData(child_no, socketData);
         }
 
         break;
     case CSEND_OPNAME:
-        socketData->command = SSEND_CHALLENGE;
-        socketData->message = child_username[child];
-
-        sentSocketData(couple_no, socketData);
-        break;
-    case CREP_CHALLENGE_ACCEPT:
-        // gui lai order cho dua vua accept
-        setChildOrder(child);
-        int opCommand;
-        if (child_order[child] == 0)
+    {
+        int op_no = findChildNoByUsername(socketData->message);
+        if (op_no != -1)
         {
-            socketData->command = SNOTI_ORDER_FIRST;
-            opCommand = SNOTI_ORDER_SECOND;
+            socketData->command = SSEND_CHALLENGE;
+            socketData->message = child_username[child_no];
+
+            // doan nay phai gui cho nguoi co username trong message
+            sentSocketData(op_no, socketData);
         }
         else
         {
-            socketData->command = SNOTI_ORDER_SECOND;
-            opCommand = SNOTI_ORDER_FIRST;
+            socketData->command = SREP_OPSTATUS_UNAVAI;
+            sentSocketData(child_no, socketData);
         }
-        
-        
-        // socketData->message = emptyMsg;
-        sentSocketData(child, socketData);
-        
-        SocketData *opSocketData = makeSocketDataObject(opCommand, socketData->message, 0, 0);
-        sentSocketData(couple_no, opSocketData);
         break;
+    }
+    case CREP_CHALLENGE_ACCEPT:
+        // gui lai order cho dua vua accept
+        // cho nay thang nao gui accept phai gui kem ten dua minh accepted
+        // tim set op_no
+        {
+            int op_no = findChildNoByUsername(socketData->message);
+            // setOpponent(child_no, op_no);
+            startGame(child_no);
+            int opCommand;
+            if (child_order[child_no] == 0)
+            {
+                socketData->command = SNOTI_ORDER_FIRST;
+                opCommand = SNOTI_ORDER_SECOND;
+            }
+            else
+            {
+                socketData->command = SNOTI_ORDER_SECOND;
+                opCommand = SNOTI_ORDER_FIRST;
+            }
+
+            // socketData->message = emptyMsg;
+            sentSocketData(child_no, socketData);
+
+            SocketData *opSocketData = makeSocketDataObject(opCommand, socketData->message, 0, 0);
+            sentSocketData(op_no, opSocketData);
+            break;
+        }
     case CREP_CHALLENGE_DENY:
+    {
         // foward cho dua kia
+        int op_no = findChildNoByUsername(socketData->message);
         socketData->command = SFORW_CHALLENGE_DENY;
         // socketData->message = emptyMsg;
-        sentSocketData(couple_no, socketData);
+        sentSocketData(op_no, socketData);
         break;
-    // case CCFED_OP:
-    
-    //     break;
-    case SSEND_CHALLENGE:
-    
+    }
+    case CSENT_TURN:
+    {
+        // foward cho dua kia
+        int op_no = findOpponentNo(child_no]);
+        socketData->command = SFORW_TURN;
+        // socketData->message = emptyMsg;
+        sentSocketData(op_no, socketData);
         break;
-    
+    }
+    case CREP_TURN_INVALID:
+    {
+        // foward cho dua kia
+        int op_no = findOpponentNo(child_no]);
+        socketData->command = SFORW_TURN_INVALID;
+        // socketData->message = emptyMsg;
+        sentSocketData(op_no, socketData);
         break;
-    case SNOTI_ORDER_FIRST:
+    }
+    case CSENT_WIN:
+    {
+        // foward cho dua kia
+        int op_no = ops_no[child_no];
+        socketData->command = SFORW_WIN;
+        // socketData->message = emptyMsg;
+        sentSocketData(op_no, socketData);
+        endGame(child_no);
         break;
-    case SNOTI_ORDER_SECOND:
-        break;
-    case CSENT_TURN_FIRST:
-        break;
-    case CSENT_TURN_SECOND:
-        break;
-    case SFORW_TURN_FIRST:
-        break;
-    case SFORW_TURN_SECOND:
-        break;
-    case CSENT_QUIT_FIRST:
-        break;
-    case CSENT_QUIT_SECOND:
-        break;
-    case SSENT_END_FIRST:
-        break;
-    case SSENT_END_SECOND:
-        break;
+    }
+
     default:
         // sent_no = couple_no;
         break;
     };
 }
-void parentProcqess(int _child_no)
+void parentProcqess()
 {
-    // o day phai viet ham de doc lien tuc tu cac pipe noi den cac child
-    for (int i = 0; i < _child_no; i++)
+    // o day phai viet ham de doc lien tuc tu cac pipe noi den cac child_no
+    for (int i = 0; i < NUM_OF_PLAYER && child_pid[i] != -1; i++)
     {
         // nhung gi ham cha chi chay mot lan voi moi ham con thi nhet vao group duois
-        if (!pinit[i])
-        {
-            // neu chua khoi tao cho child nay thi khoi tao mot lan duy nhat
-            pinit[i]++;
-            printf("- Parent set nb for child %d, total child: %d\n", i, _child_no);
-
-            close(fd[i][1][1]);
-            close(fd[i][0][0]);
-
-            int fcr1 = fcntl(fd[i][1][0], F_SETFL, fcntl(fd[i][1][0], F_GETFL) | O_NONBLOCK);
-            if (fcr1 < 0)
-            {
-                printf("- Child %d error set read nb\n", i);
-                perror("- Error on set read non-blocking on parent\n");
-                exit(0);
-            };
-            int fcr2 = fcntl(fd[i][0][1], F_SETFL, fcntl(fd[i][0][1], F_GETFL) | O_NONBLOCK);
-            if (fcr2 < 0)
-            {
-                printf("- Child %d error set write nb\n", i);
-                perror("- Error on set write non-blocking on parent\n");
-                exit(0);
-            };
-        }
+        // if (!pinit[i] && child_pid[i] != -1)
+        // {
+            
+        // }
 
         //kiem tra lien tuc
         char message[MAXLINE];
@@ -324,7 +394,7 @@ void parentProcqess(int _child_no)
             // long strleng = strlen(message);
             message[strlen(message)] = '\0'; // string ends with '\0
 
-            printf("- Data received from child %d - length %ld: %s\n", i, strlen(message), message);
+            printf("- Data received from child_no %d - length %ld: %s\n", i, strlen(message), message);
             SocketData *sd = deserialize(message);
 
             if (sd != 0)
@@ -337,9 +407,25 @@ void parentProcqess(int _child_no)
         }
     }
 }
+int findAvailableChildNo(){
+    for(int i = 0; i < NUM_OF_PLAYER; i++){
+        if(child_pid[i] == -1) return i;
+    }
+    return -1;
+}
+void init(){
+    for(int i = 0; i < NUM_OF_PLAYER; i++){
+        child_pid[i] = -1;
+        child_order[i] = -1;
+        child_username[i] = 0;
+        ops_no[i] = -1;
+        pinit[i] = 0;
+    }
+}
 
 int main(int argc, char **argv)
 {
+    init();
     int connfd;
     // int recvBytes, sentBytes;
     // socklen_t len;
@@ -385,7 +471,7 @@ int main(int argc, char **argv)
         {
             if (errno == EINTR || errno == EWOULDBLOCK || errno == EWOULDBLOCK)
             {
-                parentProcqess(child_no);
+                parentProcqess();
                 continue;
             }
             else
@@ -393,19 +479,23 @@ int main(int argc, char **argv)
                 perror("Error");
             }
         }
-        if (child_no == NUM_OF_PLAYER)
+        
+
+        if (child_num == NUM_OF_PLAYER)
         {
             printf("Exceed max number of player: %d. Abord connection.\n", NUM_OF_PLAYER);
             close(connfd);
             continue;
         }
+        int _child_no = findAvailableChildNo();
+        if(_child_no == -1) perror("Error with child_no no");
 
-        if (pipe(fd[child_no][0]) == -1)
+        if (pipe(fd[_child_no][0]) == -1)
         {
             perror("Pipe p to c Failed");
             // return 1;
         }
-        if (pipe(fd[child_no][1]) == -1)
+        if (pipe(fd[_child_no][1]) == -1)
         {
             perror("Pipe c to p Failed");
             // return 1;
@@ -421,7 +511,7 @@ int main(int argc, char **argv)
         {
             close(listenfd); // enable this so disable below
             printf("- Connected to client [%s:%d] by process pid = %d\n", inet_ntoa(cliaddr.sin_addr), htons(cliaddr.sin_port), getpid());
-            childProcqess(connfd, cliaddr, child_no);
+            childProcqess(connfd, cliaddr, _child_no);
 
             // sau khi exit, trong p con se in dong nay
             printf("- Exiting process pid = %d\n", getpid());
@@ -429,15 +519,41 @@ int main(int argc, char **argv)
             // close(listenfd);
             exit(0);
         }
+
+        // neu chua khoi tao cho child_no nay thi khoi tao mot lan duy nhat
+            pinit[_child_no]++;
+            printf("- Parent set nb for child_no %d, total child_no: %d\n", _child_no, child_num);
+
+            close(fd[_child_no][1][1]);
+            close(fd[_child_no][0][0]);
+
+            int fcr1 = fcntl(fd[_child_no][1][0], F_SETFL, fcntl(fd[_child_no][1][0], F_GETFL) | O_NONBLOCK);
+            if (fcr1 < 0)
+            {
+                printf("- Child %d error set read nb\n", _child_no);
+                perror("- Error on set read non-blocking on parent\n");
+                exit(0);
+            };
+            int fcr2 = fcntl(fd[_child_no][0][1], F_SETFL, fcntl(fd[_child_no][0][1], F_GETFL) | O_NONBLOCK);
+            if (fcr2 < 0)
+            {
+                printf("- Child %d error set write nb\n", _child_no);
+                perror("- Error on set write non-blocking on parent\n");
+                exit(0);
+            };
+
         // vi thang con da chay vao dong if tren, co exit ơ tren nen ko bao gio chay den dong duoi
         // thang cha xe clóe connfd nay de cho thang moi connect den
+
+
+
         close(connfd);
-        printf("- Child no: %d\n", child_no);
-        child_pid[child_no] = pid;
-        child_no++;
+        printf("- Child no: %d\n", _child_no);
+        child_pid[_child_no] = pid;
+        child_num++;
 
         // dua phan connect toi p con o day
-        // lam ssao p cha identify cac p con duoc nhi??? dung child_no nhe
+        // lam ssao p cha identify cac p con duoc nhi??? dung child_num nhe
     }
 
     // o day can dong tat ca pipe da mo trong parent
