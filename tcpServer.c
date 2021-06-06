@@ -236,20 +236,21 @@ void sentSocketData(int sent_no, SocketData *socketData)
 
     if (sent_no >= 0)
     {
-        char temStr[20];
+        // char temStr[20];
         // sprintf(temStr, "%d", child_no);
 
         printf("- Parent foward to %d: %s\n", sent_no, newmsg);
         write(fd[sent_no][0][1], newmsg, strlen(newmsg) + 1);
     }
 }
-void endGame(_child){
+void endGame(int _child){
     child_order[_child] = -1;
     int op_no = findOpponentNo(_child);
     child_order[op_no] = -1;
     ops_no[_child] = -1;
     ops_no[op_no] = -1;
 }
+
 void processSocketData(SocketData *socketData, int child_no)
 {
     // luu client se forard data nay den. nho set bien sent_no cho ai
@@ -342,7 +343,7 @@ void processSocketData(SocketData *socketData, int child_no)
     case CSENT_TURN:
     {
         // foward cho dua kia
-        int op_no = findOpponentNo(child_no]);
+        int op_no = findOpponentNo(child_no);
         socketData->command = SFORW_TURN;
         // socketData->message = emptyMsg;
         sentSocketData(op_no, socketData);
@@ -351,7 +352,7 @@ void processSocketData(SocketData *socketData, int child_no)
     case CREP_TURN_INVALID:
     {
         // foward cho dua kia
-        int op_no = findOpponentNo(child_no]);
+        int op_no = findOpponentNo(child_no);
         socketData->command = SFORW_TURN_INVALID;
         // socketData->message = emptyMsg;
         sentSocketData(op_no, socketData);
