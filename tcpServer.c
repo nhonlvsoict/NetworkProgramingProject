@@ -221,10 +221,9 @@ int existUsername(char *username, int child_no){
     }
     return 0;
 }
-void startGame(int _child){
+void startGame(int _child, int op_no){
     int rand = child_pid[_child] % 2;
     child_order[_child] = rand;
-    int op_no = findOpponentNo(_child);
     child_order[op_no] = !rand;
     ops_no[_child] = op_no;
     ops_no[op_no] = _child;
@@ -311,7 +310,7 @@ void processSocketData(SocketData *socketData, int child_no)
         {
             int op_no = findChildNoByUsername(socketData->message);
             // setOpponent(child_no, op_no);
-            startGame(child_no);
+            startGame(child_no, op_no);
             int opCommand;
             if (child_order[child_no] == 0)
             {
